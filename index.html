@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js Scene</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+        #dropMessage, #loadingBar, #controls {
+            pointer-events: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 24px;
+            display: block; /* Initially visible */
+        }
+        #sceneCanvas {
+            width: 100%;
+            height: 100%;
+        }
+        .bottomMessage {
+            position: absolute;
+            bottom: 20px;
+            width: 100%;
+            text-align: center;
+            font-family: Arial, sans-serif;
+            font-size: 18px;
+        }
+        button {
+            pointer-events: auto;
+            background-color: #000000;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            margin: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover {
+            background-color: #333333;
+        }
+        #blenderButton {
+            font-size: 18px;
+            padding: 10px 20px;
+            background-color: black;
+            margin-bottom: 10px;
+        }
+        #blenderButton:hover {
+            background-color: #0056b3;
+        }
+        #loadingBar {
+            width: 300px;
+            height: 10px;
+            background-color: #333;
+            position: absolute;
+            top: 60%;
+            display: none; /* Initially hidden */
+        }
+        #progress {
+            height: 100%;
+            background-color: #00ff00;
+            width: 0%;
+        }
+    </style>
+</head>
+<body>
+    <div id="dropMessage">Drop a .HDR or .GLB file</div>
+    <div id="loadingBar"><div id="progress"></div></div>
+    <canvas id="sceneCanvas"></canvas>
+
+    <div class="bottomMessage">
+        <button id="blenderButton">Synchronize with Blender</button>
+        <br>
+        <button id="toggleLighting">Lighting</button>
+        <button id="toggleGrid">Grid</button>
+        <button id="threejsButton">Source Code</button>
+    </div>
+
+    <script type="module">
+      import * as THREE from 'three';
+      import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+      import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js';
+      import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
+
+      let controls, mixer, cameraTarget, cameraSnapped;
+      let isLightingEnabled = true;
+      let isGridEnabled = false;
+      let isHDRPresent = false;
+
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      const renderer = new THREE.WebGLRenderer({ antialias: true, canvas: document.getElementById('sceneCanvas') });
+
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.0;
+      renderer.outputEncoding = THREE.sRGBEncoding;
+
+      camera.position.setScalar(2);
+      camera.lookAt(scene.position);
+
+      const anchor = new THREE.Object3D();
+      scene.add(anchor);
+
+      const sunlight = new THREE.DirectionalLight("white", 1);
+      sunlight.castShadow = true;
+      sunlight.shadow.mapSize.height = 4096;
+      sunlight.shadow.mapSize.width = 4096;
+      sunlight.shadow.bias = -0.00025;
+      sunlight.shadow.camera.top = -4;
+      sunlight.shadow.camera.left = -4;
+      sunlight.shadow.camera.right = 4;
+      sunlight.shadow.camera.bottom = 4;
+      sunlight.shadow.camera.near = 2;
+      sunlight.shadow.camera.far = 70;
+      sunlight.userData.anchor = sunlight.position.clone().set(0, 24, 24);
+      scene.dirLight = sunlight;
+
+      scene.fog = new THREE.FogExp2('#333', 0.0025);
+      scene.background = new THREE.Color('#333');
+
+      const defaultLights = new THREE.Object3D();
+      const ambientLight = new THREE.AmbientLight("white", 0.5);
+      const hemisphereLight = new THREE.HemisphereLight("#030405", "#ddeeff", 0.15);
+      defaultLights.add(sunlight);
+      defaultLights.add(ambientLight);
+      defaultLights.add(hemisphereLight);
+      scene.add(defaultLights);
+
+      // Ground Grid
+      const gridHelper = new THREE.GridHelper(100, 100);
+      gridHelper.visible = false;
+      scene.add(gridHelper);
+
+      let ws;
+      const reconnectInterval = 5000; // 5 seconds
+      let isConnected = false;
+
+      function connect() {
+          ws = new WebSocket('ws://localhost:42069');
+
+          ws.onopen = function () {
+            isConnected = true;
+            console.log("Connected to WebSocket server!");
+          };
+
+          ws.onmessage = function (event) {
+            console.log('Message from server:', event.data);
+            if (typeof event.data === 'object') {
+              const blob = new Blob([event.data], { type: 'model/gltf-binary' });
+              const file = new File([blob], "model.glb", { type: 'model/gltf-binary' });
+              loadFile(file);
+              console.log('Received GLB file blob');
+            }
+          };
+
+          ws.onclose = function () {
+            isConnected = false;
+            console.log("Disconnected from WebSocket server.");
+          };
+
+          ws.onerror = function (error) {
+            console.log("Error connecting to WebSocket server.");
+            console.error('WebSocket error:', error);
+            ws.close();
+            ws = undefined;
+          };
+      }
+
+      function checkConnection() {
+          if (!isConnected) {
+            console.log("Attempting to reconnect...");
+            connect();
+          }
+      }
+
+      connect();
+      setInterval(checkConnection, reconnectInterval);
+
+      function loadFile(file) {
+          const filename = file.name;
+          const extension = filename.split('.').pop().toLowerCase();
+          const reader = new FileReader();
+
+          if (extension === 'glb' || extension === 'gltf') {
+              document.getElementById('loadingBar').style.display = 'block'; // Show progress bar for GLTF/GLB files
+          }
+
+          reader.addEventListener('progress', function(event) {
+              if (extension === 'glb' || extension === 'gltf') {
+                  const progress = Math.floor((event.loaded / event.total) * 100) + '%';
+                  document.getElementById('progress').style.width = progress;
+              }
+          });
+
+          switch (extension) {
+              case 'hdr':
+                  const url = URL.createObjectURL(file);
+                  const rgbeLoader = new RGBELoader();
+                  rgbeLoader.setCrossOrigin("anonymous");
+                  rgbeLoader.load(url, texture => {
+                      texture.mapping = THREE.EquirectangularReflectionMapping;
+                      scene.background = scene.environment = texture;
+                      isHDRPresent = true;
+                      disableDefaultLighting();
+                      URL.revokeObjectURL(url);
+                  }, undefined, console.error);
+                  break;
+
+              case 'glb':
+              case 'gltf':
+                  reader.addEventListener('load', function (event) {
+                      const contents = event.target.result;
+                      const loader = new GLTFLoader();
+                      loader.parse(contents, '', gltf => loadGLTF(gltf, anchor));
+                  }, false);
+                  reader.readAsArrayBuffer(file);
+                  break;
+          }
+      }
+
+      function loadGLTF(gltf, anchor) {
+          let hasMesh = false;
+          const boundingBox = new THREE.Box3().setFromObject(gltf.scene);
+
+          gltf.scene.traverse(e => {
+              if (e.isMesh || e.isSkinnedMesh) {
+                  hasMesh = true;
+              }
+          });
+
+          if (hasMesh) {
+              const size = new THREE.Vector3();
+              boundingBox.getSize(size);
+              const center = boundingBox.getCenter(new THREE.Vector3());
+              const radius = boundingBox.getBoundingSphere(new THREE.Sphere()).radius;
+
+              camera.position.set(center.x, center.y + radius * 2, center.z + radius * 2);
+              camera.lookAt(center);
+              camera.near = Math.max(0.01, radius / 10);
+              camera.far = Math.max(128, radius * 10);
+              camera.updateProjectionMatrix();
+
+              controls.maxDistance = radius * 10;
+              controls.target.copy(center);
+
+              for (let i = anchor.children.length - 1; i >= 0; i--) {
+                  anchor.remove(anchor.children[i]);
+              }
+
+              anchor.add(gltf.scene);
+              if (gltf.animations.length > 0) {
+                  mixer = new THREE.AnimationMixer(anchor);
+                  const action = mixer.clipAction(gltf.animations[0]);
+                  action.setLoop(THREE.LoopRepeat);
+                  action.play();
+              }
+          }
+
+          document.getElementById('dropMessage').style.display = 'none';
+          document.getElementById('loadingBar').style.display = 'none'; // Hide progress bar after GLTF/GLB load
+      }
+
+      document.addEventListener('dragover', function(event) {
+          event.preventDefault();
+      });
+
+      document.addEventListener('drop', function(event) {
+          event.preventDefault();
+          const file = event.dataTransfer.files[0];
+          if (file) {
+              document.getElementById('dropMessage').style.display = 'none';
+              loadFile(file);
+          }
+      });
+
+      const clock = new THREE.Clock();
+      function animate() {
+          const dt = clock.getDelta();
+          requestAnimationFrame(animate);
+          controls = controls ?? new MapControls(camera, document.getElementById("sceneCanvas"));
+          controls.update(dt);
+
+          if (mixer) mixer.update(dt);
+          renderer.render(scene, camera);
+      }
+      animate();
+
+      // Lighting and Grid Controls
+      function toggleLighting() {
+          isLightingEnabled = !isLightingEnabled;
+          defaultLights.visible = isLightingEnabled;
+      }
+
+      function toggleGrid() {
+          isGridEnabled = !isGridEnabled;
+          gridHelper.visible = isGridEnabled;
+      }
+
+      function disableDefaultLighting() {
+          if (isHDRPresent) {
+              isLightingEnabled = false;
+              defaultLights.visible = false;
+          }
+      }
+
+      document.getElementById('toggleLighting').addEventListener('click', toggleLighting);
+      document.getElementById('toggleGrid').addEventListener('click', toggleGrid);
+
+      document.getElementById('threejsButton').addEventListener('click', () => {
+          window.open('https://threejs.org', '_blank');
+      });
+
+      // Blender addon button
+      document.getElementById('blenderButton').addEventListener('click', () => {
+          window.open('https://blender.org', '_blank'); // Replace with actual URL to the Blender addon
+      });
+
+      // Window resize handling
+      window.addEventListener('resize', onWindowResize, false);
+
+      function onWindowResize() {
+          camera.aspect = window.innerWidth / window.innerHeight;
+          camera.updateProjectionMatrix();
+          renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+    </script>
+</body>
+</html>
