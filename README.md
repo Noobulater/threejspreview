@@ -1,6 +1,6 @@
 [LIVE WEBSITE HERE](https://threejspreview.web.app)
 
-BLENDER SYNCHRONIZATION HERE
+[BLENDER SYNCHRONIZATION ADDON HERE](https://threejspreview.gumroad.com/l/threejspreview)
 
 # Three.js WebSocket and File Loader Integration Guide
 
